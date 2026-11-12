@@ -1,4 +1,4 @@
-FROM node:lts-bookworm-slim AS builder
+FROM node:24.5.0-bookworm-slim AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -6,7 +6,7 @@ COPY . .
 RUN npm run build
 RUN npm prune --production
 
-FROM node:lts-bookworm-slim
+FROM node:24.5.0-bookworm-slim
 WORKDIR /app
 COPY --from=builder /app/build build/
 COPY --from=builder /app/node_modules node_modules/
