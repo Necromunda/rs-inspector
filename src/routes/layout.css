@@ -1,0 +1,31 @@
+@import 'tailwindcss';
+@plugin '@tailwindcss/forms';
+@plugin '@tailwindcss/typography';
+
+@theme {
+  --color-gold: #eac384;
+  --color-dark: #332d29;
+  --color-grayish: #242424;
+}
+
+@utility scrollbar-modern {
+  scrollbar-width: thin;
+  scrollbar-color: #eac384 transparent;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #6366f1;
+    border-radius: 9999px;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background: #818cf8;
+  }
+}
