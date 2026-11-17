@@ -2,9 +2,10 @@ import {
   readCache,
   writeCache,
   PLAYER_EVENTS_PATH,
-  PLAYER_HISCORE_PATH,
   PLAYER_QUESTS_PATH,
+  getPlayerHiscoreCachePath,
 } from "#lib/server/cache.ts";
+import type { HiscoreInstances } from "#lib/shared.ts";
 import { error } from "@sveltejs/kit";
 
 export class ApiError extends Error {
@@ -105,26 +106,37 @@ export class RsPlatformApi {
       headers,
     });
 
+    const body = await response.text();
+
     if (!response.ok) {
       let message = response.statusText || "API request failed";
 
       try {
-        const data = (await response.json()) as ApiErrorResponse;
+        const data = JSON.parse(body) as ApiErrorResponse;
         message = data?.error ?? message;
       } catch {
-        // Response wasn't valid JSON
+        // Error response wasn't JSON
       }
 
-      console.log(message);
-
       throw new ApiError(message, response.status);
-      // throw new Error(
-      //   // `API request failed: ${response.status} ${response.statusText}`
-      //   error
-      // );
     }
 
-    return (await response.json()) as T;
+    try {
+      return JSON.parse(body) as T;
+    } catch {
+      console.error("Unexpected API response:", {
+        url: url.toString(),
+        finalUrl: response.url,
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+        preview: body.slice(0, 200),
+      });
+
+      throw new ApiError(
+        "RuneScape API returned an invalid JSON response",
+        502
+      );
+    }
   }
 
   // Generic request methods
@@ -142,120 +154,89 @@ export class RsPlatformApi {
     });
   }
 
-  async getPlayerEvents(username: string): Promise<PlayerEvents> {
-    const cachedData = await readCache<PlayerEvents>(
+  private async getCached<T>(
+    cachePath: string,
+    username: string,
+    endpoint: string,
+    validate?: (value: T) => boolean
+  ): Promise<T | null> {
+    const cached = await readCache<T>(cachePath, username);
+
+    if (cached) {
+      if (cached.status === 404) {
+        return null;
+      }
+
+      if (!validate || validate(cached.data)) {
+        return cached.data;
+      }
+    }
+
+    try {
+      const data = await this.get<T>(endpoint);
+
+      if (validate && !validate(data)) {
+        throw new Error("Unexpected API response format");
+      }
+
+      // Cache successful requests for 15 minutes
+      await writeCache<T>(cachePath, username, {
+        status: 200,
+        data,
+        expiresAt: Date.now() + 15 * 60_000,
+      });
+
+      return data;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        // Cache 404 for 2 minutes
+        await writeCache<T>(cachePath, username, {
+          status: 404,
+          expiresAt: Date.now() + 2 * 60_000,
+        });
+
+        return null;
+      }
+
+      // Never cache other errors
+      throw err;
+    }
+  }
+
+  async getPlayerEvents(username: string): Promise<PlayerEvents | null> {
+    return this.getCached<PlayerEvents>(
       PLAYER_EVENTS_PATH,
-      username
+      username,
+      `/m=adventurers-log/api/v1/playerEvents/${encodeURIComponent(username)}`,
+      (value) => typeof value?.name === "string" && Array.isArray(value.events)
     );
-
-    if (!!!cachedData) {
-      console.log("Return playerEvents from API");
-      try {
-        const data = this.get<PlayerEvents>(
-          `/m=adventurers-log/api/v1/playerEvents/${encodeURIComponent(
-            username
-          )}`
-        );
-
-        await writeCache<PlayerEvents>(
-          PLAYER_EVENTS_PATH,
-          username,
-          await data
-        );
-
-        return data;
-      } catch (error) {
-        await writeCache<PlayerEvents>(
-          PLAYER_EVENTS_PATH,
-          username,
-          <PlayerEvents>{}
-        );
-
-        throw error;
-        // return <PlayerEvents>{};
-      }
-    } else {
-      console.log("Return cached playerEvents");
-
-      return cachedData;
-    }
   }
 
-  async getPlayerHiscore(username: string, instance: string = "hiscore") {
-    const cachedData = await readCache<PlayerHiscore>(
-      PLAYER_HISCORE_PATH,
-      username
+  async getPlayerHiscore(
+    username: string,
+    instance: HiscoreInstances
+  ): Promise<PlayerHiscore | null> {
+    return this.getCached<PlayerHiscore>(
+      getPlayerHiscoreCachePath(instance),
+      username,
+      `/m=${instance}/index_lite.json?player=${encodeURIComponent(username)}`,
+      (value) =>
+        Array.isArray(value?.skills) &&
+        value.skills.length > 0 &&
+        Array.isArray(value.activities)
     );
-
-    if (!!!cachedData) {
-      console.log("Return playerHiscore from API");
-      try {
-        const data = this.get<PlayerHiscore>(
-          `/m=${instance}/index_lite.json?player=${encodeURIComponent(
-            username
-          )}`
-        );
-        console.log(await data);
-
-        await writeCache<PlayerHiscore>(
-          PLAYER_HISCORE_PATH,
-          username,
-          await data
-        );
-
-        return data;
-      } catch (error) {
-        await writeCache<PlayerHiscore>(
-          PLAYER_HISCORE_PATH,
-          username,
-          <PlayerHiscore>{}
-        );
-
-        throw error;
-        // return <PlayerHiscore>{};
-      }
-    } else {
-      console.log("Return cached playerHiscore");
-
-      return cachedData;
-    }
   }
 
-  async getPlayerQuests(username: string) {
-    const cachedData = await readCache<PlayerQuests>(
+  async getPlayerQuests(username: string): Promise<PlayerQuests | null> {
+    return this.getCached<PlayerQuests>(
       PLAYER_QUESTS_PATH,
-      username
+      username,
+      `/m=adventurers-log/api/v1/playerQuests/${encodeURIComponent(username)}`,
+      (value) =>
+        typeof value?.name === "string" &&
+        value.quests !== null &&
+        typeof value.quests === "object" &&
+        !Array.isArray(value.quests)
     );
-
-    if (!!!cachedData) {
-      console.log("Return playerQuests from API");
-      try {
-        const data = this.get<PlayerQuests>(
-          `/m=adventurers-log/api/v1/playerQuests/${encodeURIComponent(
-            username
-          )}`
-        );
-        await writeCache<PlayerQuests>(
-          PLAYER_QUESTS_PATH,
-          username,
-          await data
-        );
-
-        return data;
-      } catch (error) {
-        await writeCache<PlayerQuests>(
-          PLAYER_QUESTS_PATH,
-          username,
-          <PlayerQuests>{}
-        );
-
-        throw error;
-        // return <PlayerQuests>{};
-      }
-    } else {
-      console.log("Return cached playerQuests");
-
-      return cachedData;
-    }
   }
 }
